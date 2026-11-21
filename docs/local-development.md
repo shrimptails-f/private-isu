@@ -4,9 +4,11 @@ WSL の `/home/user/git_wsl/private-isu` を VS Code で開き、Dev Containers:
 
 1. コンテナのターミナルで `task init` を実行します。公式初期データは圧縮状態で合計約 2.4 GB あり、展開にも空き容量と時間が必要です。中断後の再実行でダウンロードを再開します。完了前に MySQL を起動しないでください。
 2. WSL 側で `docker compose -f .devcontainer/compose.yaml up -d --build nginx` を実行します。初回の MySQL インポートには時間がかかります。
-3. ブラウザーで http://localhost:8080 を開きます。コンテナ内で `task bench` を実行すると公式ベンチマーカーを実行します。ベンチマークはアプリのデータを初期化します。
+3. ブラウザーで http://localhost:9002 を開きます。コンテナ内で `task bench` を実行すると公式ベンチマーカーを実行します。ベンチマークはアプリのデータを初期化します。
 
 Go アプリを変更したら WSL 側で `docker compose -f .devcontainer/compose.yaml up -d --build app nginx` を実行します。開発コンテナの Dockerfile やマウントを変更した場合は VS Code の Dev Containers: Rebuild Container を使います。停止は WSL 側で `docker compose -f .devcontainer/compose.yaml down`。DB は名前付きボリュームに残ります。初期データのインポートは空の DB ボリュームの初回起動時だけ行われます。誤って初期データのない状態で起動した場合、既存 DB を消さずに調査してください。
+
+開発コンテナ内の `docker` は、マウントした `/var/run/docker.sock` を通じてホストの Docker デーモンを操作します。再ビルド後に `docker ps` や `docker stats` で確認できます。ベンチマーク中の記録には、別のターミナルで `while true; do date -u '+%Y-%m-%dT%H:%M:%SZ'; docker stats --no-stream; sleep 2; done | tee docker-stats.log` を実行し、終了時に Ctrl+C を押します。このソケットにアクセスできるユーザーはホストの Docker を広く操作できるため、信頼できる環境で使用してください。
 
 `task codex` と `task claude` は承認やサンドボックスを省略する設定です。WSL の `~/.codex` と `~/.claude` を書き込み可能で共有するため、認証だけでなく設定・履歴なども共有され、コンテナからホスト側を変更できます。Claude の `~/.claude.json` は共有していないため初回設定が必要になることがあります。`~/.config/gh` は読み取り専用で共有しますが、GitHub API の権限はトークンに従います。`ghp` と `ghw` の使い分けは [GitHub CLI 利用手順](github-cli.md) を参照。非対話 Bash では `source scripts/gh-wrappers.bash` が必要です。
 

@@ -5,10 +5,13 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
     init: true
+    user: root
+    entrypoint: [bash, /usr/local/bin/devcontainer-entrypoint]
     command: sleep infinity
     working_dir: /workspace/private-isu
     volumes:
       - ..:/workspace/private-isu
+      - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/.codex:/home/dev/.codex
       - ${HOME}/.claude:/home/dev/.claude
       - ${HOME}/.config/gh:/home/dev/.config/gh:ro
@@ -39,7 +42,7 @@ services:
       - ../webapp/etc/nginx/conf.d:/etc/nginx/conf.d:ro
       - ../webapp/public:/public:ro
     ports:
-      - 127.0.0.1:8080:80
+      - 127.0.0.1:9002:80
   mysql:
     image: mysql:9.7
     environment:
