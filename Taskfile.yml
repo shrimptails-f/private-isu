@@ -1,0 +1,24 @@
+version: '3'
+tasks:
+  init:
+    desc: Download the official initial database and benchmark images
+    cmds:
+      - bash scripts/init-data.sh
+  bench:
+    desc: Run the benchmark against the local Compose application
+    dir: benchmarker
+    cmds:
+      - go run . -t http://nginx -u ./userdata
+  test:
+    desc: Check Go application and benchmarker
+    cmds:
+      - cd webapp/golang && go test ./...
+      - cd benchmarker && go test ./...
+  codex:
+    interactive: true
+    cmds:
+      - codex --no-daemon --dangerously-bypass-approvals-and-sandbox
+  claude:
+    interactive: true
+    cmds:
+      - claude --dangerously-skip-permissions

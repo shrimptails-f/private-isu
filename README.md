@@ -234,3 +234,7 @@ https://gist.github.com/tohutohu/024551682a9004da286b0abd6366fa55 を参照
 
 * Rust実装 https://github.com/Romira915/private-isu-rust
 * Scala実装 https://github.com/catatsuy/private-isu/pull/140
+
+### WSL / Dev Container (Go)
+
+[ローカル開発手順](docs/local-development.md)を参照してください。

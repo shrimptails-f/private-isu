@@ -1,0 +1,9 @@
+{
+  "name": "private-isu (Go)",
+  "dockerComposeFile": "compose.yaml",
+  "service": "dev",
+  "runServices": ["dev"],
+  "workspaceFolder": "/workspace/private-isu",
+  "remoteUser": "dev",
+  "customizations": {"vscode": {"extensions": ["golang.go", "redhat.vscode-yaml"], "settings": {"terminal.integrated.defaultProfile.linux": "bash"}}}
+}

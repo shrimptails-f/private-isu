@@ -45,3 +45,7 @@ For updates to dependencies, language runtimes, the OS, MySQL, nginx, Docker, or
 - `cd benchmarker && ./bin/benchmarker -t "http://localhost:8080" -u ./userdata`: run the benchmark against the local target after initialization.
 
 Use the language-native formatter or tests relevant to the requested change, but do not treat their success as authorization to broaden the change. Never commit secrets or downloaded dumps.
+
+## GitHub authentication in the development container
+
+- Source `scripts/gh-wrappers.bash` explicitly in non-interactive Bash. Use `ghp` for this repository and `ghw` for reading other repositories; do not switch credentials on authentication failure. These wrappers do not change Git push authentication.

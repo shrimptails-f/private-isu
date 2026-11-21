@@ -1,0 +1,61 @@
+name: private-isu-dev
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    init: true
+    command: sleep infinity
+    working_dir: /workspace/private-isu
+    volumes:
+      - ..:/workspace/private-isu
+      - ${HOME}/.codex:/home/dev/.codex
+      - ${HOME}/.claude:/home/dev/.claude
+      - ${HOME}/.config/gh:/home/dev/.config/gh:ro
+      - go-modules:/home/dev/go/pkg/mod
+  app:
+    build:
+      context: ../webapp/golang
+    environment:
+      ISUCONP_DB_HOST: mysql
+      ISUCONP_DB_PORT: 3306
+      ISUCONP_DB_USER: root
+      ISUCONP_DB_PASSWORD: root
+      ISUCONP_DB_NAME: isuconp
+      ISUCONP_MEMCACHED_ADDRESS: memcached:11211
+    depends_on:
+      mysql:
+        condition: service_healthy
+      memcached:
+        condition: service_started
+    volumes:
+      - ../webapp/public:/home/public
+    init: true
+  nginx:
+    image: nginx:1.30
+    depends_on:
+      - app
+    volumes:
+      - ../webapp/etc/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ../webapp/public:/public:ro
+    ports:
+      - 127.0.0.1:8080:80
+  mysql:
+    image: mysql:9.7
+    environment:
+      MYSQL_ROOT_HOST: '%'
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ../webapp/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [CMD-SHELL, 'mysql -uroot -proot -e "SELECT 1 FROM isuconp.users LIMIT 1" >/dev/null 2>&1']
+      interval: 10s
+      timeout: 5s
+      retries: 90
+      start_period: 30s
+  memcached:
+    image: memcached:1.6
+volumes:
+  mysql-data:
+  go-modules:

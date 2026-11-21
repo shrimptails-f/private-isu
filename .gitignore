@@ -16,3 +16,13 @@ portal/tmp
 !/portal/log/.keep
 /portal/tmp
 .vagrant
+
+# Downloaded practice data and local binaries
+/webapp/sql/dump.sql.bz2
+/benchmarker/userdata/img.zip
+/benchmarker/userdata/img/
+/benchmarker/bin/
+/webapp/golang/app
+/webapp/sql/*.part
+/benchmarker/userdata/*.part
+/benchmarker/userdata/.img-ready

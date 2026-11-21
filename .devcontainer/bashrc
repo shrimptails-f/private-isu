@@ -1,0 +1,3 @@
+export PATH="/home/dev/.local/bin:/home/dev/go/bin:/usr/local/go/bin:$PATH"
+source /usr/local/share/gh-wrappers.bash
+export PS1='\u@\h:\w\$ '
