@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	crand "crypto/rand"
+	"crypto/sha512"
+	"database/sql"
 	"fmt"
 	"html/template"
 	"io"
@@ -10,11 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
@@ -26,8 +28,10 @@ import (
 )
 
 var (
-	db    *sqlx.DB
-	store *gsm.MemcacheStore
+	db                *tracedDB
+	store             *gsm.MemcacheStore
+	imageCacheState   = newImageCache(64 << 20)
+	imageInitializeMu sync.RWMutex
 )
 
 const (
@@ -112,22 +116,9 @@ func validateUser(accountName, password string) bool {
 		regexp.MustCompile(`\A[0-9a-zA-Z_]{6,}\z`).MatchString(password)
 }
 
-// 今回のGo実装では言語側のエスケープの仕組みが使えないのでOSコマンドインジェクション対策できない
-// 取り急ぎPHPのescapeshellarg関数を参考に自前で実装
-// cf: http://jp2.php.net/manual/ja/function.escapeshellarg.php
-func escapeshellarg(arg string) string {
-	return "'" + strings.Replace(arg, "'", "'\\''", -1) + "'"
-}
-
-func digest(ctx context.Context, src string) string {
-	// opensslのバージョンによっては (stdin)= というのがつくので取る
-	out, err := exec.CommandContext(ctx, "/bin/bash", "-c", `printf "%s" `+escapeshellarg(src)+` | openssl dgst -sha512 | sed 's/^.*= //'`).Output()
-	if err != nil {
-		log.Print(err)
-		return ""
-	}
-
-	return strings.TrimSuffix(string(out), "\n")
+func digest(_ context.Context, src string) string {
+	sum := sha512.Sum512([]byte(src))
+	return fmt.Sprintf("%x", sum)
 }
 
 func calculateSalt(ctx context.Context, accountName string) string {
@@ -139,7 +130,9 @@ func calculatePasshash(ctx context.Context, accountName, password string) string
 }
 
 func getSession(r *http.Request) *sessions.Session {
-	session, _ := store.Get(r, "isuconp-go.session")
+	start := time.Now()
+	session, err := store.Get(r, "isuconp-go.session")
+	traceOperation(r.Context(), "session_get", "session_store_get", start, err)
 
 	return session
 }
@@ -176,53 +169,116 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 }
 
 func makePosts(ctx context.Context, results []Post, csrfToken string, allComments bool) ([]Post, error) {
+	// Find the first visible posts in their original order, including when
+	// deleted accounts require looking beyond the first page.
 	var posts []Post
-
-	for _, p := range results {
-		err := db.GetContext(ctx, &p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
+	for start := 0; start < len(results) && len(posts) < postsPerPage; start += 32 {
+		end := min(start+32, len(results))
+		ids := make([]int, 0, end-start)
+		for _, p := range results[start:end] {
+			ids = append(ids, p.ID)
+		}
+		query, args, err := sqlx.In("SELECT u.* FROM users u INNER JOIN posts p ON p.user_id = u.id WHERE p.id IN (?)", ids)
 		if err != nil {
 			return nil, err
 		}
-
-		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
-		if !allComments {
-			query += " LIMIT 3"
-		}
-		var comments []Comment
-		err = db.SelectContext(ctx, &comments, query, p.ID)
-		if err != nil {
+		var users []User
+		if err := db.SelectContext(ctx, &users, query, args...); err != nil {
 			return nil, err
 		}
-
-		for i := range comments {
-			err := db.GetContext(ctx, &comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-			if err != nil {
-				return nil, err
+		byID := make(map[int]User, len(users))
+		for _, u := range users {
+			byID[u.ID] = u
+		}
+		for _, p := range results[start:end] {
+			u, ok := byID[p.UserID]
+			if !ok {
+				return nil, sql.ErrNoRows
+			}
+			if u.DelFlg != 0 {
+				continue
+			}
+			p.User, p.CSRFToken = u, csrfToken
+			posts = append(posts, p)
+			if len(posts) == postsPerPage {
+				break
 			}
 		}
+	}
+	if len(posts) == 0 {
+		return posts, nil
+	}
 
-		// reverse
-		for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
-			comments[i], comments[j] = comments[j], comments[i]
+	ids := make([]int, 0, len(posts))
+	for _, p := range posts {
+		ids = append(ids, p.ID)
+	}
+	query, args, err := sqlx.In("SELECT post_id, COUNT(*) AS count FROM comments WHERE post_id IN (?) GROUP BY post_id", ids)
+	if err != nil {
+		return nil, err
+	}
+	var counts []struct {
+		PostID int `db:"post_id"`
+		Count  int `db:"count"`
+	}
+	if err := db.SelectContext(ctx, &counts, query, args...); err != nil {
+		return nil, err
+	}
+	countsByPost := make(map[int]int, len(counts))
+	for _, c := range counts {
+		countsByPost[c.PostID] = c.Count
+	}
+
+	// Each subquery retains the original per-post ordering and LIMIT.
+	parts := make([]string, 0, len(posts))
+	commentArgs := make([]any, 0, len(posts))
+	for _, p := range posts {
+		q := "(SELECT * FROM comments WHERE post_id = ? ORDER BY created_at DESC"
+		if !allComments {
+			q += " LIMIT 3"
 		}
-
-		p.Comments = comments
-
-		err = db.GetContext(ctx, &p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
+		parts = append(parts, q+")")
+		commentArgs = append(commentArgs, p.ID)
+	}
+	var comments []Comment
+	if err := db.SelectContext(ctx, &comments, strings.Join(parts, " UNION ALL ")+" ORDER BY post_id, created_at DESC", commentArgs...); err != nil {
+		return nil, err
+	}
+	userIDs := make([]int, 0, len(comments))
+	for _, c := range comments {
+		userIDs = append(userIDs, c.UserID)
+	}
+	usersByID := make(map[int]User)
+	if len(userIDs) > 0 {
+		query, args, err := sqlx.In("SELECT * FROM users WHERE id IN (?)", userIDs)
 		if err != nil {
 			return nil, err
 		}
-
-		p.CSRFToken = csrfToken
-
-		if p.User.DelFlg == 0 {
-			posts = append(posts, p)
+		var users []User
+		if err := db.SelectContext(ctx, &users, query, args...); err != nil {
+			return nil, err
 		}
-		if len(posts) >= postsPerPage {
-			break
+		for _, u := range users {
+			usersByID[u.ID] = u
 		}
 	}
-
+	commentsByPost := make(map[int][]Comment)
+	for _, c := range comments {
+		u, ok := usersByID[c.UserID]
+		if !ok {
+			return nil, sql.ErrNoRows
+		}
+		c.User = u
+		commentsByPost[c.PostID] = append(commentsByPost[c.PostID], c)
+	}
+	for i := range posts {
+		posts[i].CommentCount = countsByPost[posts[i].ID]
+		comments := commentsByPost[posts[i].ID]
+		for l, r := 0, len(comments)-1; l < r; l, r = l+1, r-1 {
+			comments[l], comments[r] = comments[r], comments[l]
+		}
+		posts[i].Comments = comments
+	}
 	return posts, nil
 }
 
@@ -266,7 +322,10 @@ func getTemplPath(filename string) string {
 
 func getInitialize(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	imageInitializeMu.Lock()
 	dbInitialize(ctx)
+	imageCacheState.clear()
+	imageInitializeMu.Unlock()
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -388,13 +447,57 @@ func getLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
+// listPosts keeps the original query as a fallback when equal timestamps make
+// its otherwise unspecified tie ordering observable.
+func listPosts(ctx context.Context, maxCreatedAt *string) ([]Post, error) {
+	results := []Post{}
+	where := ""
+	var args []any
+	if maxCreatedAt != nil {
+		where = "p.created_at <= ? AND "
+		args = append(args, *maxCreatedAt)
+	}
+	query := "SELECT p.id, p.user_id, p.body, p.mime, p.created_at FROM posts p LEFT JOIN users u ON u.id = p.user_id WHERE " + where + "(u.id IS NULL OR u.del_flg = 0) ORDER BY p.created_at DESC LIMIT 20"
+	if err := db.SelectContext(ctx, &results, query, args...); err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return results, nil
+	}
+
+	// Include deleted users in this check: they participated in the original
+	// sort before makePosts filtered them out.
+	tieQuery := "SELECT COUNT(*) - COUNT(DISTINCT created_at) FROM posts WHERE created_at >= ?"
+	tieArgs := []any{results[len(results)-1].CreatedAt}
+	if maxCreatedAt != nil {
+		tieQuery += " AND created_at <= ?"
+		tieArgs = append(tieArgs, *maxCreatedAt)
+	}
+	var ties int
+	if err := db.GetContext(ctx, &ties, tieQuery, tieArgs...); err != nil {
+		return nil, err
+	}
+	if ties == 0 {
+		return results, nil
+	}
+
+	results = []Post{}
+	query = "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` IGNORE INDEX (idx_posts_created_at)"
+	if maxCreatedAt != nil {
+		query += " WHERE `created_at` <= ?"
+	}
+	query += " ORDER BY `created_at` DESC"
+	if err := db.SelectContext(ctx, &results, query, args...); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func getIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	me := getSessionUser(r)
 
-	results := []Post{}
-
-	err := db.SelectContext(ctx, &results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` ORDER BY `created_at` DESC")
+	results, err := listPosts(ctx, nil)
 	if err != nil {
 		log.Print(err)
 		return
@@ -529,8 +632,8 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
-	err = db.SelectContext(ctx, &results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` WHERE `created_at` <= ? ORDER BY `created_at` DESC", t.Format(ISO8601Format))
+	maxTime := t.Format(ISO8601Format)
+	results, err := listPosts(ctx, &maxTime)
 	if err != nil {
 		log.Print(err)
 		return
@@ -645,7 +748,9 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	readStart := time.Now()
 	filedata, err := io.ReadAll(file)
+	traceOperation(ctx, "file_read", "upload", readStart, err)
 	if err != nil {
 		log.Print(err)
 		return
@@ -692,20 +797,34 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	post := Post{}
-	err = db.GetContext(ctx, &post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
-	if err != nil {
-		log.Print(err)
-		return
+	imageInitializeMu.RLock()
+	start := time.Now()
+	image, found := imageCacheState.get(pid)
+	cacheResult := "hit"
+	if !found {
+		cacheResult = "miss"
 	}
+	traceOperation(ctx, "image_cache", cacheResult, start, nil)
+	if !found {
+		post := Post{}
+		err = db.GetContext(ctx, &post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
+		if err != nil {
+			imageInitializeMu.RUnlock()
+			log.Print(err)
+			return
+		}
+		image = cachedImage{id: pid, mime: post.Mime, data: post.Imgdata}
+		imageCacheState.put(image)
+	}
+	imageInitializeMu.RUnlock()
 
 	ext := r.PathValue("ext")
 
-	if ext == "jpg" && post.Mime == "image/jpeg" ||
-		ext == "png" && post.Mime == "image/png" ||
-		ext == "gif" && post.Mime == "image/gif" {
-		w.Header().Set("Content-Type", post.Mime)
-		_, err := w.Write(post.Imgdata)
+	if ext == "jpg" && image.mime == "image/jpeg" ||
+		ext == "png" && image.mime == "image/png" ||
+		ext == "gif" && image.mime == "image/gif" {
+		w.Header().Set("Content-Type", image.mime)
+		_, err := w.Write(image.data)
 		if err != nil {
 			log.Print(err)
 			return
@@ -844,13 +963,15 @@ func main() {
 	cfg.Loc = time.Local
 	dsn := cfg.FormatDSN()
 
-	db, err = sqlx.Open("mysql", dsn)
+	connection, err := sqlx.Open("mysql", dsn)
 	if err != nil {
 		log.Fatalf("Failed to connect to DB: %s.", err.Error())
 	}
+	db = &tracedDB{DB: connection}
 	defer db.Close()
 
 	r := chi.NewRouter()
+	r.Use(traceRequest)
 
 	r.Get("/initialize", getInitialize)
 	r.Get("/login", getLogin)

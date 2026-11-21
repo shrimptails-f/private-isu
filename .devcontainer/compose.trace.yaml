@@ -1,0 +1,4 @@
+services:
+  app:
+    environment:
+      ISUCONP_TRACE: "1"
