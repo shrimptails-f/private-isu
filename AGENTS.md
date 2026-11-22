@@ -49,3 +49,8 @@ Use the language-native formatter or tests relevant to the requested change, but
 ## GitHub authentication in the development container
 
 - Source `scripts/gh-wrappers.bash` explicitly in non-interactive Bash. Use `ghp` for this repository and `ghw` for reading other repositories; do not switch credentials on authentication failure. These wrappers do not change Git push authentication.
+
+## git確認の制限
+
+https://github.com/shrimptails-f/private-isuへのcommit push、リモートブランチの参照は禁止とする。
+ユーザーが試行した記録があり、ノーヒントでAI自律実行による効率化を測れないためである。

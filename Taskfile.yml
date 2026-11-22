@@ -22,3 +22,19 @@ tasks:
     interactive: true
     cmds:
       - claude --dangerously-skip-permissions
+  exp:measure:
+    desc: 'Deploy, migrate and benchmark for an experiment (e.g. task exp:measure -- exp-0001 --ref HEAD)'
+    cmds:
+      - bash scripts/exp.sh measure {{.CLI_ARGS}}
+  exp:variance:
+    desc: Measure benchmark variance of the current HEAD (Step 0)
+    cmds:
+      - bash scripts/exp.sh measure step0-variance --ref HEAD --runs 5 {{.CLI_ARGS}}
+  exp:migrate-down:
+    desc: 'Revert one migration with its .down.sql (e.g. task exp:migrate-down -- 004_name)'
+    cmds:
+      - bash scripts/exp.sh migrate-down {{.CLI_ARGS}}
+  exp:status:
+    desc: Show applied migrations and whether trace logging is enabled
+    cmds:
+      - bash scripts/exp.sh status

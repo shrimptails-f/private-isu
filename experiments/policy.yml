@@ -1,0 +1,8 @@
+# 自律チューニングの採否の基準と上限。isu-director skill が読む。
+# minGainPercent が null の場合、director は今回のベースラインのばらつきから暫定閾値を決める。
+minGainPercent: null   # 候補の中央値がベースラインの中央値をこの割合（%）以上上回ったら採用する
+runs: 3                # 1 回の計測でベンチマークを実行する回数
+maxExperiments: 5      # 1 セッションで行う実験の上限
+maxHours: 4            # 1 セッションの時間の上限
+maxRetryPerWorkflow: 1 # decision_required のとき、同じ workflow を再実行してよい回数
+engineTimeout: 2h      # phasekeeper engine 1 回の実行時間の上限（timeout コマンドに渡す）

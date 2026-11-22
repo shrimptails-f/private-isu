@@ -26,3 +26,7 @@ portal/tmp
 /webapp/sql/*.part
 /benchmarker/userdata/*.part
 /benchmarker/userdata/.img-ready
+
+# Experiment runner
+/experiments/.measure.lock
+/experiments/*/measure-*/logs/
