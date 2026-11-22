@@ -177,9 +177,34 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 
 func makePosts(ctx context.Context, results []Post, csrfToken string, allComments bool) ([]Post, error) {
 	var posts []Post
+	var countStmt, commentsStmt, userStmt *sqlx.Stmt
+	defer func() {
+		for _, stmt := range []*sqlx.Stmt{countStmt, commentsStmt, userStmt} {
+			if stmt != nil {
+				stmt.Close()
+			}
+		}
+	}()
+	getUser := func(user *User, id int) error {
+		if userStmt == nil {
+			var err error
+			userStmt, err = db.PreparexContext(ctx, "SELECT * FROM `users` WHERE `id` = ?")
+			if err != nil {
+				return err
+			}
+		}
+		return userStmt.GetContext(ctx, user, id)
+	}
 
 	for _, p := range results {
-		err := db.GetContext(ctx, &p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
+		if countStmt == nil {
+			var err error
+			countStmt, err = db.PreparexContext(ctx, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?")
+			if err != nil {
+				return nil, err
+			}
+		}
+		err := countStmt.GetContext(ctx, &p.CommentCount, p.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -189,13 +214,19 @@ func makePosts(ctx context.Context, results []Post, csrfToken string, allComment
 			query += " LIMIT 3"
 		}
 		var comments []Comment
-		err = db.SelectContext(ctx, &comments, query, p.ID)
+		if commentsStmt == nil {
+			commentsStmt, err = db.PreparexContext(ctx, query)
+			if err != nil {
+				return nil, err
+			}
+		}
+		err = commentsStmt.SelectContext(ctx, &comments, p.ID)
 		if err != nil {
 			return nil, err
 		}
 
 		for i := range comments {
-			err := db.GetContext(ctx, &comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
+			err := getUser(&comments[i].User, comments[i].UserID)
 			if err != nil {
 				return nil, err
 			}
@@ -208,7 +239,7 @@ func makePosts(ctx context.Context, results []Post, csrfToken string, allComment
 
 		p.Comments = comments
 
-		err = db.GetContext(ctx, &p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
+		err = getUser(&p.User, p.UserID)
 		if err != nil {
 			return nil, err
 		}
